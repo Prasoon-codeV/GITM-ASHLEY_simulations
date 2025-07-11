@@ -1,0 +1,130 @@
+PRO read_profiles,pfile
+
+;  sample read software for SABER NO or CO2 cooling rate profile netCDF data files
+;  provides examples of reading several parameters and creating plots, including:
+;  1) a line plot of integrated flux value for each scan profile measured in a given day vs. time
+;  2) a contour plot of the data for all profiles in a given day
+;  3) a line plot of profiles occuring in a particular latitude band (20N-30N) on a given day
+;  NOTE that the data for a given calendar day includes those orbits that begin on that day.
+;  The last orbit that begins before midnight usually extends into the next day, but all of its
+;  scans are included for the day in which the orbit originates.
+;  INPUTS:
+;  pfile - the full path and file name of the SABER daily power file to be read
+;  File names are of the form 
+;  SABER_NO_PROFILE_FLUX_2017365_V1.0.nc or SABER_CO2_PROFILE_FLUX_2017365_V1.0.nc 
+
+;  make sure the file exists
+IF FILE_TEST(pfile) NE 1 THEN BEGIN
+  PRINT,'File not found: ',pfile
+  RETURN
+ENDIF
+
+;  get the directory path for the file and the file name without suffix
+fdir = FILE_DIRNAME(pfile)
+fname = FILE_BASENAME(pfile,'.nc')
+
+fid = NCDF_OPEN(pfile,/NOWRITE)
+
+;  get the dataset name global attribute from the file
+;  Note that netCDF stores STRING data as a CHAR data type which
+;  is stored as the binary encoding of the characters in the string.
+;  The IDL STRING function is used to convert that representation to
+;  a string data type.
+NCDF_ATTGET,fid,'Dataset_Name',dsname,/GLOBAL
+dataset_name = STRING(dsname)
+dsparts = STRSPLIT(dataset_name,'_',/EXTRACT)
+factor = 1.e-8
+label = 'Cooling Rate (10!E-8!N W/m!E3!N)'
+
+; Note that the netCDF variable names are case sensitive (NOcool, CO2cool)
+CASE dsparts[1] OF
+  'NO' : BEGIN
+    param = 'NO'
+    title_param = 'NO'
+    coolvar = 'NOcool'
+    profile_xrange = [-2,5]
+    minv = -1
+    maxv = 10
+  END
+  'CO2' : BEGIN
+    param = 'CO2'
+    title_param = 'CO!D2!N'
+    coolvar = 'CO2cool'
+    profile_xrange = [-10,35]
+    minv = -2
+    maxv = 25
+  END
+  ELSE : BEGIN
+    PRINT,'Invalid species found ',dsparts[1]
+    RETURN
+  END
+ENDCASE
+
+NCDF_VARGET,fid,'year',year
+NCDF_VARGET,fid,'day',day
+NCDF_VARGET,fid,'time',time
+NCDF_VARGET,fid,'flux',flux
+numscans = N_ELEMENTS(flux)
+
+;  convert the year, day of year, and time to Julian dates
+doy_to_mdy,day,year,mm,dd
+jdates = REFORM(JULDAY(mm,dd,year,0,0,time[15,*]*1.e-3))
+datestr = STRING(mm,FORMAT='(I02)')+'/'+STRING(dd,FORMAT='(I02)')+'/'+STRING(year,FORMAT='(I4)')
+date_range = [JULDAY(mm,dd,year,0,0,0),JULDAY(mm,dd+1,year,2,0,0)]
+
+;  plot flux by time
+p1 = PLOT(jdates,flux/1.e-3,DIMENSIONS=[1500,500],TITLE=title_param+' Flux for Orbits Starting on '+datestr,$
+XRANGE=date_range,XTITLE='Hour (UT)',XTICKUNITS='Hours',XTICKINTERVAL=2,XMINOR=1,$
+YTITLE=' Flux (10!U-3!N Wm!U-2!N)',YMINOR=4,COLOR='dodger blue',THICK=2,FONT_SIZE=20)
+
+;  plot profiles by time
+;  get altitude range
+NCDF_VARGET,fid,'altitude',alt
+;  get profiles of cooling
+NCDF_VARGET,fid,coolvar,cooling
+
+c1 = CONTOUR(TRANSPOSE(cooling/factor),jdates,alt,DIMENSIONS=[1200,1200],$
+     TITLE=title_param+' Cooling Rate for Orbits Starting on '+datestr,$
+     MIN_VALUE=minv,MAX_VALUE=maxv,/FILL,RGB_TABLE=49,FONT_SIZE=20,$
+     XRANGE=date_range,XTICKUNITS='Hours',XTICKINTERVAL=2,XMINOR=1,XTITLE='Hour (UT)',$
+     YTITLE='Altitude (km)')
+cb = COLORBAR(TITLE='Cooling Rate (10!E-8!N W/m!E3!N)',POSITION=[0.35,0.05,0.75,0.08],FONT_SIZE=18)
+
+; plot profiles whose tangent point latitude at 100 km is between 20N and 30N
+NCDF_VARGET,fid,'tplatitude',lat
+inbin = WHERE(lat[0,*] GE 20 AND lat[0,*] LE 30,lct)
+IF lct EQ 0 THEN BEGIN
+  PRINT,'No profiles found with latitude between 20N and 30N'
+  RETURN
+ENDIF
+
+p2 = PLOT(cooling/factor,alt,/NODATA,DIMENSIONS=[1200,1200],TITLE=title_param+' Cooling Rate Profiles with Latitude at 100 km from 20N-30N',$
+  XRANGE=profile_xrange,XTITLE='Cooling Rate (10!E-8!N W/m!E3!N)',YTITLE='Altitude (km)',THICK=2,FONT_SIZE=20)
+FOR s=0,lct-1 DO BEGIN
+  p21 = PLOT(cooling[*,inbin[s]]/factor,alt,/OVERPLOT,COLOR='dodger blue')
+ENDFOR
+
+END
+
+PRO doy_to_mdy,doy,year,month,day
+  ;  converts day of year number for the given year
+  ;  to month and day
+  ;  INPUTS:
+  ;    doy - day of year number
+  ;    year
+  ;  OUTPUTS:
+  ;    month - numeric
+  ;    day - day of month
+  ;
+  ;  LAH - 9/30/2008
+
+  mdays = [0,31,59,90,120,151,181,212,243,273,304,334]
+  leap_mdays = [0,31,60,91,121,152,182,213,244,274,305,335,366]
+
+  IF ((year MOD 4) EQ 0) AND ((year MOD 100) NE 0) THEN mdays = leap_mdays  ;  it's a leap year
+
+  month = MAX(WHERE(doy GT mdays,mcount)) + 1
+  day = doy - mdays[month-1]
+
+END
+
